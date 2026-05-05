@@ -1,76 +1,171 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Camera Diagnostic Test</title>
+    <title>Aurora Silk - Bronx Children's Museum</title>
     <style>
-        body { background: #222; color: white; font-family: sans-serif; text-align: center; padding: 50px; }
-        button { padding: 20px 40px; font-size: 20px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
-        #log { margin-top: 30px; padding: 20px; background: #000; color: #0f0; font-family: monospace; text-align: left; border-radius: 8px; min-height: 100px;}
-        video { margin-top: 20px; max-width: 100%; border: 3px solid #444; border-radius: 8px; background: #000; }
-        .error { color: #ff4444 !important; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; color: white; }
+        #webcam { display: none; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: #000; z-index: 100; text-align: center;
+        }
+        button {
+            padding: 25px 60px; font-size: 28px; cursor: pointer;
+            background: #4a148c; color: white; border: none; border-radius: 60px;
+            box-shadow: 0 0 30px rgba(138, 43, 226, 0.4); transition: 0.3s;
+        }
+        button:hover { background: #7b1fa2; transform: scale(1.05); }
+        #status { margin-top: 20px; color: #888; font-size: 18px; }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
-    <h1>Camera Diagnostic</h1>
-    <button id="testBtn">TEST CAMERA</button>
-    
-    <div id="log">Waiting for you to click 'Test Camera'...</div>
-    
-    <video id="webcam" playsinline autoplay muted width="640" height="480"></video>
+    <div id="overlay">
+        <h1>Aurora Silk</h1>
+        <p>Slowly wave your arms to guide the light.</p>
+        <button id="startBtn">START EXPERIENCE</button>
+        <div id="status">Ready to begin</div>
+    </div>
+
+    <!-- Hidden video for tracking -->
+    <video id="webcam" playsinline autoplay muted width="320" height="240"></video>
 
     <script>
-        const btn = document.getElementById('testBtn');
-        const logDiv = document.getElementById('log');
         const video = document.getElementById('webcam');
+        const startBtn = document.getElementById('startBtn');
+        const status = document.getElementById('status');
+        const overlay = document.getElementById('overlay');
 
-        function log(msg, isError = false) {
-            logDiv.innerHTML += `<div class="${isError ? 'error' : ''}">> ${msg}</div>`;
-            console.log(msg);
-        }
+        let scene, camera, renderer, material;
+        let targetX = 0.5, targetY = 0.5;
+        let currentX = 0.5, currentY = 0.5;
 
-        btn.addEventListener('click', async () => {
-            logDiv.innerHTML = ""; // Clear log
-            log("Button clicked. Checking environment...");
-
-            // 1. Check if we are on HTTPS
-            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-                log("CRITICAL ERROR: You are not on HTTPS. Browsers block cameras on http://", true);
-                log("Make sure your GitHub Pages link starts with https://", true);
-                return;
-            }
-
-            // 2. Check if the browser supports cameras at all
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                log("CRITICAL ERROR: navigator.mediaDevices is not supported in this browser.", true);
-                return;
-            }
-
-            log("Environment looks good. Requesting camera access...");
-
+        // THE FIXED HANDSHAKE
+        startBtn.addEventListener('click', async () => {
+            status.innerText = "Connecting to camera...";
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                log("Permission GRANTED! Got media stream.");
-                
                 video.srcObject = stream;
-                log("Attached stream to video element. Waiting for video to play...");
+                await video.play(); // Wait for video to actually start
                 
-                await video.play();
-                log("SUCCESS! Video is now playing.");
-
+                status.innerText = "Initializing Art Engine...";
+                initArt(); // Only start Three.js after video is playing
+                
+                overlay.style.display = 'none';
             } catch (err) {
-                log(`FAILED: ${err.name} - ${err.message}`, true);
-                
-                if (err.name === 'NotAllowedError') {
-                    log("FIX: You clicked 'Deny', or your browser settings are permanently blocking the camera for this site. Click the lock icon next to the URL to check.", true);
-                } else if (err.name === 'NotFoundError') {
-                    log("FIX: No camera hardware was found. Is it plugged in?", true);
-                } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-                    log("FIX: The camera is already being used by another app (like Zoom, Teams, or another browser tab). Close them and try again.", true);
-                }
+                status.innerText = "Error: " + err.message;
+                status.style.color = "red";
             }
+        });
+
+        function initArt() {
+            scene = new THREE.Scene();
+            camera = new THREE.Camera(); 
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const geometry = new THREE.PlaneGeometry(2, 2);
+            material = new THREE.ShaderMaterial({
+                uniforms: {
+                    uTime: { value: 0 },
+                    uColor: { value: new THREE.Color(0x00d4ff) },
+                    uMotion: { value: new THREE.Vector2(0.5, 0.5) }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
+                `,
+                fragmentShader: `
+                    uniform float uTime;
+                    uniform vec2 uMotion;
+                    uniform vec3 uColor;
+                    varying vec2 vUv;
+
+                    void main() {
+                        vec2 uv = vUv;
+                        float d = distance(uv, vec2(uMotion.x, 1.0 - uMotion.y));
+                        
+                        float silk = 0.0;
+                        for(float i=1.0; i<4.0; i++) {
+                            // Organic, high-viscosity swaying
+                            uv.x += sin(uv.y * 1.5 + uTime * 0.1 * i) * 0.12;
+                            float line = abs(0.008 / (uv.x - uMotion.x));
+                            // Fades out gracefully based on distance
+                            silk += line * smoothstep(1.0, 0.2, d);
+                        }
+
+                        // Subtle glowing stardust
+                        float stars = fract(sin(dot(vUv, vec2(12.9898,78.233))) * 43758.5453);
+                        float glow = step(0.998, stars) * (sin(uTime + stars * 10.0) * 0.5 + 0.5);
+
+                        gl_FragColor = vec4(uColor * (silk + glow), 1.0);
+                    }
+                `,
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+
+            scene.add(new THREE.Mesh(geometry, material));
+            
+            trackMovement();
+            animate();
+        }
+
+        function trackMovement() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 32;
+            canvas.height = 24;
+            let lastData = null;
+
+            function process() {
+                ctx.drawImage(video, 0, 0, 32, 24);
+                const currentData = ctx.getImageData(0, 0, 32, 24).data;
+                
+                if (lastData) {
+                    let moveX = 0, moveY = 0, count = 0;
+                    for (let i = 0; i < currentData.length; i += 4) {
+                        let diff = Math.abs(currentData[i] - lastData[i]);
+                        if (diff > 40) { 
+                            moveX += (i/4) % 32;
+                            moveY += Math.floor((i/4) / 32);
+                            count++;
+                        }
+                    }
+                    if (count > 5) {
+                        targetX = (moveX / count) / 32;
+                        targetY = (moveY / count) / 24;
+                    }
+                }
+                lastData = currentData;
+                setTimeout(process, 50); 
+            }
+            process();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // SMOOTHING: This removes the jumpiness
+            currentX += (targetX - currentX) * 0.05;
+            currentY += (targetY - currentY) * 0.05;
+            
+            material.uniforms.uMotion.value.set(currentX, currentY);
+            material.uniforms.uTime.value += 0.01;
+
+            // BIOME SHIFT: Calm color cycling
+            const hue = (Math.sin(Date.now() * 0.00005) * 0.5 + 0.5);
+            material.uniforms.uColor.value.setHSL(hue, 0.7, 0.5);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            if(renderer) renderer.setSize(window.innerWidth, window.innerHeight);
         });
     </script>
 </body>
