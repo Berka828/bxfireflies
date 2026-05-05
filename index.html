@@ -2,170 +2,278 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Aurora Silk - Bronx Children's Museum</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kinetic Stardust Wall - Bronx Children's Museum</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; color: white; }
-        #webcam { display: none; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; }
+        
+        /* High-End UI Overlay */
         #overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; justify-content: center; align-items: center;
-            background: #000; z-index: 100; text-align: center;
+            background: radial-gradient(circle at center, #1a1a2e 0%, #000000 100%);
+            z-index: 100; text-align: center; color: white;
         }
+        h1 { font-size: 3rem; font-weight: 300; letter-spacing: 4px; margin-bottom: 10px; }
+        p { font-size: 1.2rem; color: #888; font-weight: 300; margin-bottom: 40px; }
+        
         button {
-            padding: 25px 60px; font-size: 28px; cursor: pointer;
-            background: #4a148c; color: white; border: none; border-radius: 60px;
-            box-shadow: 0 0 30px rgba(138, 43, 226, 0.4); transition: 0.3s;
+            padding: 20px 50px; font-size: 18px; letter-spacing: 2px; cursor: pointer;
+            background: transparent; color: white; border: 1px solid rgba(255,255,255,0.3); 
+            border-radius: 4px; transition: all 0.4s ease; text-transform: uppercase;
         }
-        button:hover { background: #7b1fa2; transform: scale(1.05); }
-        #status { margin-top: 20px; color: #888; font-size: 18px; }
+        button:hover { background: white; color: black; box-shadow: 0 0 30px rgba(255,255,255,0.5); }
+        
+        #errorMsg { margin-top: 20px; color: #ff4a4a; font-size: 14px; max-width: 600px; line-height: 1.5; }
+        #webcam { display: none; }
     </style>
+    <!-- Three.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
     <div id="overlay">
-        <h1>Aurora Silk</h1>
-        <p>Slowly wave your arms to guide the light.</p>
-        <button id="startBtn">START EXPERIENCE</button>
-        <div id="status">Ready to begin</div>
+        <h1>KINETIC STARDUST</h1>
+        <p>An immersive, evolving sensory space.</p>
+        <button id="startBtn">Initiate Canvas</button>
+        <div id="errorMsg"></div>
     </div>
 
-    <!-- Hidden video for tracking -->
-    <video id="webcam" playsinline autoplay muted width="320" height="240"></video>
+    <video id="webcam" playsinline autoplay muted></video>
 
     <script>
+        // --- CORE VARIABLES ---
+        const PARTICLE_DENSITY = 350; // 350x350 grid = 122,500 particles
+        let scene, camera, renderer, particleSystem;
+        
+        // --- MOTION TRACKING VARIABLES ---
         const video = document.getElementById('webcam');
-        const startBtn = document.getElementById('startBtn');
-        const status = document.getElementById('status');
-        const overlay = document.getElementById('overlay');
+        const diffCanvas = document.createElement('canvas');
+        const trailCanvas = document.createElement('canvas'); // The heatmap
+        let diffCtx, trailCtx, lastFrameData;
+        let motionTexture;
 
-        let scene, camera, renderer, material;
-        let targetX = 0.5, targetY = 0.5;
-        let currentX = 0.5, currentY = 0.5;
+        // --- DYNAMIC COLOR PALETTES ---
+        const palettes = [
+            { base: new THREE.Color(0x001133), accent: new THREE.Color(0x00ffff) }, // Deep River (Teal/Blue)
+            { base: new THREE.Color(0x330011), accent: new THREE.Color(0xff00aa) }, // Bloom (Pink/Purple)
+            { base: new THREE.Color(0x220000), accent: new THREE.Color(0xff6600) }, // Ember (Orange/Red)
+            { base: new THREE.Color(0x002211), accent: new THREE.Color(0x55ff22) }  // Aurora (Green/Emerald)
+        ];
+        let currentPalette = 0;
+        let colorBase = palettes[0].base.clone();
+        let colorAccent = palettes[0].accent.clone();
 
-        // THE FIXED HANDSHAKE
-        startBtn.addEventListener('click', async () => {
-            status.innerText = "Connecting to camera...";
+        // --- INITIALIZATION & CAMERA ---
+        document.getElementById('startBtn').addEventListener('click', async () => {
+            const errorMsg = document.getElementById('errorMsg');
+            errorMsg.innerText = "Accessing optical sensors...";
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
                 video.srcObject = stream;
-                await video.play(); // Wait for video to actually start
+                await video.play();
                 
-                status.innerText = "Initializing Art Engine...";
-                initArt(); // Only start Three.js after video is playing
+                document.getElementById('overlay').style.opacity = 0;
+                setTimeout(() => document.getElementById('overlay').style.display = 'none', 1000);
                 
-                overlay.style.display = 'none';
+                setupMotionTracking();
+                initWebGL();
             } catch (err) {
-                status.innerText = "Error: " + err.message;
-                status.style.color = "red";
+                errorMsg.innerText = "Hardware connection failed: " + err.message + ". Ensure HTTPS is active.";
             }
         });
 
-        function initArt() {
+        // --- SMOOTH MOTION HEATMAP (The secret to great tracking) ---
+        function setupMotionTracking() {
+            diffCanvas.width = 64; diffCanvas.height = 48; // Low res for fast math
+            trailCanvas.width = 64; trailCanvas.height = 48;
+            diffCtx = diffCanvas.getContext('2d', { willReadFrequently: true });
+            trailCtx = trailCanvas.getContext('2d');
+            
+            // Fill initial black
+            trailCtx.fillStyle = 'black';
+            trailCtx.fillRect(0, 0, 64, 48);
+
+            motionTexture = new THREE.CanvasTexture(trailCanvas);
+            motionTexture.minFilter = THREE.LinearFilter; // Smooths out the 64x48 grid
+
+            function processVideo() {
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    diffCtx.drawImage(video, 0, 0, 64, 48);
+                    const currentFrame = diffCtx.getImageData(0, 0, 64, 48);
+                    
+                    // 1. Fade the old heatmap slightly (creates the smooth lingering trail)
+                    trailCtx.fillStyle = 'rgba(0, 0, 0, 0.15)'; 
+                    trailCtx.fillRect(0, 0, 64, 48);
+
+                    if (lastFrameData) {
+                        trailCtx.fillStyle = 'white'; // Heatmap color
+                        
+                        // 2. Find motion and draw intense blobs on the heatmap
+                        for (let i = 0; i < currentFrame.data.length; i += 4) {
+                            const rDiff = Math.abs(currentFrame.data[i] - lastFrameData.data[i]);
+                            if (rDiff > 30) { // Motion threshold
+                                const x = (i / 4) % 64;
+                                const y = Math.floor((i / 4) / 64);
+                                
+                                // Draw a soft brush stroke at the motion point
+                                trailCtx.beginPath();
+                                trailCtx.arc(x, y, 2.5, 0, Math.PI * 2);
+                                trailCtx.fill();
+                            }
+                        }
+                    }
+                    lastFrameData = currentFrame;
+                    motionTexture.needsUpdate = true; // Send to Graphics Card
+                }
+                requestAnimationFrame(processVideo);
+            }
+            processVideo();
+        }
+
+        // --- WEBGL ART ENGINE ---
+        function initWebGL() {
             scene = new THREE.Scene();
-            camera = new THREE.Camera(); 
-            renderer = new THREE.WebGLRenderer({ antialias: true });
+            scene.fog = new THREE.FogExp2(0x000000, 0.005); // Cinematic depth fading
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
+            camera.position.z = 100;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
             renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // Optimize for massive theater screens
             document.body.appendChild(renderer.domElement);
 
-            const geometry = new THREE.PlaneGeometry(2, 2);
-            material = new THREE.ShaderMaterial({
+            // 1. Create the massive particle grid
+            const geometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(PARTICLE_DENSITY * PARTICLE_DENSITY * 3);
+            const uvs = new Float32Array(PARTICLE_DENSITY * PARTICLE_DENSITY * 2);
+            
+            let i = 0, j = 0;
+            for(let y = 0; y < PARTICLE_DENSITY; y++) {
+                for(let x = 0; x < PARTICLE_DENSITY; x++) {
+                    positions[i++] = (x / PARTICLE_DENSITY - 0.5) * 300; // Spread X
+                    positions[i++] = (y / PARTICLE_DENSITY - 0.5) * 200; // Spread Y
+                    positions[i++] = 0; // Z starts flat
+                    
+                    uvs[j++] = x / PARTICLE_DENSITY;
+                    uvs[j++] = y / PARTICLE_DENSITY;
+                }
+            }
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+
+            // 2. The Custom GPU Physics Shader
+            const material = new THREE.ShaderMaterial({
                 uniforms: {
                     uTime: { value: 0 },
-                    uColor: { value: new THREE.Color(0x00d4ff) },
-                    uMotion: { value: new THREE.Vector2(0.5, 0.5) }
+                    uMotion: { value: motionTexture },
+                    uColorBase: { value: colorBase },
+                    uColorAccent: { value: colorAccent }
                 },
                 vertexShader: `
-                    varying vec2 vUv;
-                    void main() { vUv = uv; gl_Position = vec4(position, 1.0); }
-                `,
-                fragmentShader: `
                     uniform float uTime;
-                    uniform vec2 uMotion;
-                    uniform vec3 uColor;
-                    varying vec2 vUv;
+                    uniform sampler2D uMotion;
+                    uniform vec3 uColorBase;
+                    uniform vec3 uColorAccent;
+                    
+                    varying vec3 vColor;
+                    
+                    // Simple noise function for ambient drifting
+                    float hash(float n) { return fract(sin(n) * 1e4); }
+                    float hash(vec2 p) { return fract(1e4 * sin(17.0 * p.x + p.y * 0.1) * (0.1 + abs(sin(p.y * 13.0 + p.x)))); }
 
                     void main() {
-                        vec2 uv = vUv;
-                        float d = distance(uv, vec2(uMotion.x, 1.0 - uMotion.y));
+                        vec2 mirrorUv = vec2(1.0 - uv.x, 1.0 - uv.y); // Mirror webcam
                         
-                        float silk = 0.0;
-                        for(float i=1.0; i<4.0; i++) {
-                            // Organic, high-viscosity swaying
-                            uv.x += sin(uv.y * 1.5 + uTime * 0.1 * i) * 0.12;
-                            float line = abs(0.008 / (uv.x - uMotion.x));
-                            // Fades out gracefully based on distance
-                            silk += line * smoothstep(1.0, 0.2, d);
-                        }
+                        // Read the motion heatmap
+                        float motionForce = texture2D(uMotion, mirrorUv).r; 
+                        
+                        vec3 pos = position;
+                        
+                        // 1. Ambient fluid drifting (Simplex Noise approximation)
+                        float noise = hash(uv * 10.0 + uTime * 0.1);
+                        pos.x += sin(uTime * 0.5 + pos.y * 0.05) * 2.0;
+                        pos.y += cos(uTime * 0.3 + pos.x * 0.05) * 2.0;
 
-                        // Subtle glowing stardust
-                        float stars = fract(sin(dot(vUv, vec2(12.9898,78.233))) * 43758.5453);
-                        float glow = step(0.998, stars) * (sin(uTime + stars * 10.0) * 0.5 + 0.5);
+                        // 2. Interactive Explosion (Motion pushes particles forward and out)
+                        // Smoothstep makes it feel viscous and heavy
+                        float pop = smoothstep(0.1, 1.0, motionForce); 
+                        pos.z += pop * 60.0; // Push toward camera
+                        
+                        // Push away from center of motion
+                        vec2 dir = (uv - 0.5);
+                        pos.x += dir.x * pop * 40.0;
+                        pos.y += dir.y * pop * 40.0;
 
-                        gl_FragColor = vec4(uColor * (silk + glow), 1.0);
+                        // 3. Coloring: Mix base color with accent color based on excitement
+                        vColor = mix(uColorBase, uColorAccent, pop + noise * 0.2);
+
+                        // Particle size scales up drastically when excited
+                        gl_PointSize = (2.0 + pop * 8.0) * (100.0 / -pos.z);
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    varying vec3 vColor;
+                    void main() {
+                        // Make particles perfect glowing circles
+                        vec2 xy = gl_PointCoord.xy - vec2(0.5);
+                        float dist = length(xy);
+                        if (dist > 0.5) discard;
+                        
+                        // Soft glowing edge
+                        float alpha = smoothstep(0.5, 0.1, dist);
+                        gl_FragColor = vec4(vColor, alpha * 0.8);
                     }
                 `,
                 transparent: true,
-                blending: THREE.AdditiveBlending
+                blending: THREE.AdditiveBlending, // Makes overlapping particles intensely bright
+                depthWrite: false // Prevents weird black square artifacts
             });
 
-            scene.add(new THREE.Mesh(geometry, material));
-            
-            trackMovement();
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+
+            // Start cycles
+            setInterval(cyclePalette, 30000); // Change theme every 30 seconds
             animate();
         }
 
-        function trackMovement() {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = 32;
-            canvas.height = 24;
-            let lastData = null;
-
-            function process() {
-                ctx.drawImage(video, 0, 0, 32, 24);
-                const currentData = ctx.getImageData(0, 0, 32, 24).data;
-                
-                if (lastData) {
-                    let moveX = 0, moveY = 0, count = 0;
-                    for (let i = 0; i < currentData.length; i += 4) {
-                        let diff = Math.abs(currentData[i] - lastData[i]);
-                        if (diff > 40) { 
-                            moveX += (i/4) % 32;
-                            moveY += Math.floor((i/4) / 32);
-                            count++;
-                        }
-                    }
-                    if (count > 5) {
-                        targetX = (moveX / count) / 32;
-                        targetY = (moveY / count) / 24;
-                    }
-                }
-                lastData = currentData;
-                setTimeout(process, 50); 
-            }
-            process();
+        // --- DYNAMIC THEME CYCLER ---
+        function cyclePalette() {
+            currentPalette = (currentPalette + 1) % palettes.length;
         }
 
+        // --- MAIN RENDER LOOP ---
         function animate() {
             requestAnimationFrame(animate);
             
-            // SMOOTHING: This removes the jumpiness
-            currentX += (targetX - currentX) * 0.05;
-            currentY += (targetY - currentY) * 0.05;
-            
-            material.uniforms.uMotion.value.set(currentX, currentY);
-            material.uniforms.uTime.value += 0.01;
+            if (particleSystem) {
+                const uniforms = particleSystem.material.uniforms;
+                uniforms.uTime.value += 0.015;
 
-            // BIOME SHIFT: Calm color cycling
-            const hue = (Math.sin(Date.now() * 0.00005) * 0.5 + 0.5);
-            material.uniforms.uColor.value.setHSL(hue, 0.7, 0.5);
+                // Smoothly interpolate colors for seamless theme transitions
+                colorBase.lerp(palettes[currentPalette].base, 0.02);
+                colorAccent.lerp(palettes[currentPalette].accent, 0.02);
+                
+                // Slight cinematic camera sway
+                camera.position.x = Math.sin(Date.now() * 0.0005) * 5;
+                camera.position.y = Math.cos(Date.now() * 0.0003) * 5;
+                camera.lookAt(scene.position);
+            }
 
             renderer.render(scene, camera);
         }
 
+        // Resize handler for theater screens
         window.addEventListener('resize', () => {
-            if(renderer) renderer.setSize(window.innerWidth, window.innerHeight);
+            if (renderer) {
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+            }
         });
     </script>
 </body>
