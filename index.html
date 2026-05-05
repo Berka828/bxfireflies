@@ -1,233 +1,75 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aurora Silk - Bronx Children's Museum</title>
+    <title>Camera Diagnostic Test</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; color: white; }
-        #webcam { display: none; }
-        
-        /* The Activation Screen - Vital for bypassing browser security */
-        #overlay {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: flex; flex-direction: column; justify-content: center; align-items: center;
-            background: #111; z-index: 100; text-align: center;
-        }
-        
-        button {
-            padding: 25px 60px; font-size: 24px; font-weight: bold; cursor: pointer;
-            background: #4a148c; color: white; border: none; border-radius: 60px;
-            box-shadow: 0 0 30px rgba(138, 43, 226, 0.4); transition: 0.3s;
-            margin-bottom: 20px;
-        }
-        
-        button:hover { background: #7b1fa2; transform: scale(1.05); }
-        
-        #statusMessage { 
-            color: #ccc; font-size: 16px; max-width: 80%; line-height: 1.5; 
-        }
-        
-        /* The Canvas */
-        canvas { display: block; width: 100vw; height: 100vh; }
+        body { background: #222; color: white; font-family: sans-serif; text-align: center; padding: 50px; }
+        button { padding: 20px 40px; font-size: 20px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        #log { margin-top: 30px; padding: 20px; background: #000; color: #0f0; font-family: monospace; text-align: left; border-radius: 8px; min-height: 100px;}
+        video { margin-top: 20px; max-width: 100%; border: 3px solid #444; border-radius: 8px; background: #000; }
+        .error { color: #ff4444 !important; }
     </style>
-    <!-- Load Three.js safely from CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
-    <!-- Camera Activation Overlay -->
-    <div id="overlay">
-        <h1>Aurora Silk</h1>
-        <p>A Calming Sensory Experience</p>
-        <button id="startBtn">ACTIVATE CAMERA</button>
-        <div id="statusMessage">Click the button above to allow camera access.</div>
-    </div>
-
-    <!-- Hidden Video Element -->
-    <video id="webcam" autoplay playsinline muted></video>
+    <h1>Camera Diagnostic</h1>
+    <button id="testBtn">TEST CAMERA</button>
+    
+    <div id="log">Waiting for you to click 'Test Camera'...</div>
+    
+    <video id="webcam" playsinline autoplay muted width="640" height="480"></video>
 
     <script>
+        const btn = document.getElementById('testBtn');
+        const logDiv = document.getElementById('log');
         const video = document.getElementById('webcam');
-        const startBtn = document.getElementById('startBtn');
-        const statusMessage = document.getElementById('statusMessage');
-        const overlay = document.getElementById('overlay');
 
-        let scene, camera, renderer, material;
-        
-        // --- CAMERA ACTIVATION LOGIC ---
-        startBtn.addEventListener('click', async () => {
-            statusMessage.style.color = "#fff";
-            statusMessage.innerText = "Requesting permission...";
-            
+        function log(msg, isError = false) {
+            logDiv.innerHTML += `<div class="${isError ? 'error' : ''}">> ${msg}</div>`;
+            console.log(msg);
+        }
+
+        btn.addEventListener('click', async () => {
+            logDiv.innerHTML = ""; // Clear log
+            log("Button clicked. Checking environment...");
+
+            // 1. Check if we are on HTTPS
+            if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+                log("CRITICAL ERROR: You are not on HTTPS. Browsers block cameras on http://", true);
+                log("Make sure your GitHub Pages link starts with https://", true);
+                return;
+            }
+
+            // 2. Check if the browser supports cameras at all
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                log("CRITICAL ERROR: navigator.mediaDevices is not supported in this browser.", true);
+                return;
+            }
+
+            log("Environment looks good. Requesting camera access...");
+
             try {
-                // Request the camera
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { width: 640, height: 480, facingMode: "user" } 
-                });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                log("Permission GRANTED! Got media stream.");
                 
-                // Assign stream to video
                 video.srcObject = stream;
+                log("Attached stream to video element. Waiting for video to play...");
                 
-                // Wait for the video to actually have data before starting WebGL
-                video.onloadedmetadata = () => {
-                    video.play();
-                    statusMessage.innerText = "Camera Active. Starting Engine...";
-                    
-                    // Hide overlay and start the magic
-                    setTimeout(() => {
-                        overlay.style.display = 'none';
-                        initScene();
-                    }, 500); 
-                };
-                
+                await video.play();
+                log("SUCCESS! Video is now playing.");
+
             } catch (err) {
-                // This is crucial: Tell the user exactly WHY it failed
-                statusMessage.style.color = "#ff5555";
-                if (err.name === 'NotAllowedError') {
-                    statusMessage.innerText = "Camera Error: Permission Denied. Please click the lock icon in your browser URL bar and allow the camera.";
-                } else if (err.name === 'NotFoundError') {
-                    statusMessage.innerText = "Camera Error: No camera detected on this device.";
-                } else {
-                    statusMessage.innerText = "Camera Error: " + err.message;
-                }
-                console.error("Camera Setup Failed:", err);
-            }
-        });
-
-
-        // --- WEBGL & SHADER LOGIC ---
-        function initScene() {
-            scene = new THREE.Scene();
-            camera = new THREE.Camera(); 
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-
-            const geometry = new THREE.PlaneGeometry(2, 2);
-            material = new THREE.ShaderMaterial({
-                uniforms: {
-                    uTime: { value: 0 },
-                    uColor: { value: new THREE.Color(0x00d4ff) },
-                    uMotionX: { value: 0.5 },
-                    uMotionY: { value: 0.5 }
-                },
-                vertexShader: `
-                    varying vec2 vUv;
-                    void main() { 
-                        vUv = uv; 
-                        gl_Position = vec4(position, 1.0); 
-                    }
-                `,
-                fragmentShader: `
-                    uniform float uTime;
-                    uniform float uMotionX;
-                    uniform float uMotionY;
-                    uniform vec3 uColor;
-                    varying vec2 vUv;
-
-                    void main() {
-                        vec2 uv = vUv;
-                        
-                        // Distance from the movement center
-                        float dist = distance(uv, vec2(uMotionX, 1.0 - uMotionY));
-                        
-                        // Create thick, slow-moving silk ribbons
-                        float silk = 0.0;
-                        for(float i=1.0; i<4.0; i++) {
-                            // Slow, organic sway
-                            uv.x += sin(uv.y * 2.0 + uTime * 0.15 * i) * 0.1;
-                            float line = abs(0.01 / (uv.x - uMotionX));
-                            
-                            // The ribbon is thicker near the motion, fades out at edges
-                            silk += line * smoothstep(0.8, 0.1, dist);
-                        }
-
-                        // Add subtle glowing dust in the background
-                        float noise = fract(sin(dot(vUv, vec2(12.9898,78.233))) * 43758.5453);
-                        float dust = step(0.995, noise) * 0.5 * (sin(uTime * 2.0 + noise * 10.0) * 0.5 + 0.5);
-
-                        vec3 finalColor = uColor * (silk + dust);
-                        gl_FragColor = vec4(finalColor, 1.0);
-                    }
-                `,
-                transparent: true,
-                blending: THREE.AdditiveBlending
-            });
-
-            scene.add(new THREE.Mesh(geometry, material));
-            
-            startMotionTracking();
-            animate();
-        }
-
-
-        // --- SMOOTH MOTION TRACKING ---
-        function startMotionTracking() {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            // Low resolution for faster processing
-            canvas.width = 32; 
-            canvas.height = 24;
-            
-            let lastData = null;
-            let currentTargetX = 0.5;
-            let currentTargetY = 0.5;
-
-            function processFrame() {
-                if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    ctx.drawImage(video, 0, 0, 32, 24);
-                    const currentData = ctx.getImageData(0, 0, 32, 24).data;
-                    
-                    if (lastData) {
-                        let totalX = 0, totalY = 0, motionPixels = 0;
-                        
-                        // Find all pixels that changed significantly
-                        for (let i = 0; i < currentData.length; i += 4) {
-                            let diff = Math.abs(currentData[i] - lastData[i]);
-                            if (diff > 30) { 
-                                totalX += (i/4) % 32;
-                                totalY += Math.floor((i/4) / 32);
-                                motionPixels++;
-                            }
-                        }
-                        
-                        // If enough motion happened, update the target
-                        if (motionPixels > 10) {
-                            currentTargetX = (totalX / motionPixels) / 32;
-                            currentTargetY = (totalY / motionPixels) / 24;
-                        }
-                    }
-                    lastData = currentData;
-                }
+                log(`FAILED: ${err.name} - ${err.message}`, true);
                 
-                // Ease the actual uniforms toward the target for fluid motion
-                material.uniforms.uMotionX.value += (currentTargetX - material.uniforms.uMotionX.value) * 0.05;
-                material.uniforms.uMotionY.value += (currentTargetY - material.uniforms.uMotionY.value) * 0.05;
-
-                requestAnimationFrame(processFrame);
-            }
-            processFrame();
-        }
-
-        // --- ANIMATION & BIOME LOOP ---
-        function animate() {
-            requestAnimationFrame(animate);
-            
-            // Slow down time for a calming effect
-            material.uniforms.uTime.value += 0.01;
-
-            // Slowly cycle colors (The Biomes) over 60 seconds
-            const hue = (Math.sin(Date.now() * 0.00005) * 0.5 + 0.5);
-            material.uniforms.uColor.value.setHSL(hue, 0.8, 0.5);
-
-            renderer.render(scene, camera);
-        }
-
-        // Handle resizing
-        window.addEventListener('resize', () => {
-            if(renderer) {
-                renderer.setSize(window.innerWidth, window.innerHeight);
+                if (err.name === 'NotAllowedError') {
+                    log("FIX: You clicked 'Deny', or your browser settings are permanently blocking the camera for this site. Click the lock icon next to the URL to check.", true);
+                } else if (err.name === 'NotFoundError') {
+                    log("FIX: No camera hardware was found. Is it plugged in?", true);
+                } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+                    log("FIX: The camera is already being used by another app (like Zoom, Teams, or another browser tab). Close them and try again.", true);
+                }
             }
         });
     </script>
